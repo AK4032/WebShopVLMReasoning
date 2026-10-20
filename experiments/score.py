@@ -1,9 +1,10 @@
-"""Score model choices with WebShop's original reward function.
+"""Score model choices with WebShop's original reward function and a lenient variant.
 
 Reads data/tasks/tasks_<split>.jsonl and every results/raw/<split>/<model>/<effort>.jsonl,
 keeps the latest successful record per (model, effort, task, sample), and writes one
 row per response to results/scored/<split>.csv. Responses with an API error or an
-unparseable answer get `valid = False` and no reward.
+unparseable answer get `valid = False` and no reward. `reward_lenient` applies the
+same formula with the punctuation/format-tolerant matching in lenient.py.
 
 Usage (repo root, Python 3.8 `webshop` env):
     python experiments/score.py --split dev
@@ -20,6 +21,7 @@ sys.path.insert(0, REPO_DIR)
 
 import pandas as pd  # noqa: E402
 
+import lenient  # noqa: E402
 from web_agent_site.engine.goal import get_reward  # noqa: E402
 
 
@@ -75,6 +77,8 @@ def score_record(r, task):
     candidate = task['candidates'][parsed['position'] - 1]
     reward, info = get_reward(candidate['product'], task['goal'], price=candidate['price'],
                               options=parsed['options'], verbose=True)
+    reward_lenient = lenient.reward(candidate['product'], task['goal'], candidate['price'],
+                                    parsed['options'], info['r_type'])
     row.update({
         'chosen_position': parsed['position'],
         'chosen_asin': parsed['asin'],
@@ -85,6 +89,8 @@ def score_record(r, task):
         'confidence': parsed['confidence'],
         'reward': reward,
         'success': reward == 1.0,
+        'reward_lenient': reward_lenient,
+        'success_lenient': reward_lenient == 1.0,
         'chosen_oracle_reward': candidate['oracle_reward'],
         'chosen_product_perfect': candidate['oracle_reward'] == 1.0,
         'r_type': info.get('r_type'),
@@ -119,7 +125,8 @@ def main():
     if len(df):
         summary = df.groupby(['model_key', 'effort']).agg(
             n=('task_id', 'size'), valid=('valid', 'mean'), success=('success', 'mean'),
-            reward=('reward', 'mean'), confidence=('confidence', 'mean'),
+            success_lenient=('success_lenient', 'mean'), reward=('reward', 'mean'),
+            confidence=('confidence', 'mean'),
             reasoning_tokens=('reasoning_tokens', 'mean'))
         print(summary.round(3).to_string())
 

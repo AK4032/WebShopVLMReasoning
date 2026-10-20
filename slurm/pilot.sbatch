@@ -1,5 +1,5 @@
 #!/bin/bash
-# Pilot: 20 near-miss dev tasks x (3 prelim models x 3 efforts) = 9 array jobs, 180 requests.
+# Pilot: 20 robust near-miss dev tasks x (3 prelim models x 3 efforts) = 9 array jobs, 180 requests.
 # Submit from the project folder:  sbatch slurm/pilot.sbatch
 
 #SBATCH --account=phd
@@ -16,7 +16,7 @@ module load python/booth/3.12
 source ~/venvs/webshop-vlm/bin/activate
 
 python experiments/run_choice.py \
-    --tasks data/tasks/tasks_dev_nearmiss.jsonl \
+    --tasks data/tasks/tasks_dev_robust.jsonl \
     --group prelim --array-index "$SLURM_ARRAY_TASK_ID" \
     --limit 20 --concurrency 8
 

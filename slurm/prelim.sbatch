@@ -1,5 +1,5 @@
 #!/bin/bash
-# Preliminary run: first 150 near-miss test tasks x (3 prelim models x 3 efforts) = 9 array jobs.
+# Preliminary run: first 150 robust near-miss test tasks x (3 prelim models x 3 efforts) = 9 array jobs.
 # Re-submitting resumes: requests that already succeeded are skipped.
 # Submit from the project folder:  sbatch slurm/prelim.sbatch
 
@@ -17,7 +17,7 @@ module load python/booth/3.12
 source ~/venvs/webshop-vlm/bin/activate
 
 python experiments/run_choice.py \
-    --tasks data/tasks/tasks_test_nearmiss.jsonl \
+    --tasks data/tasks/tasks_test_robust.jsonl \
     --group prelim --array-index "$SLURM_ARRAY_TASK_ID" \
     --limit 150 --concurrency 8
 

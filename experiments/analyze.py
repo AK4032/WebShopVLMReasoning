@@ -46,6 +46,14 @@ def auroc(conf, correct):
     return mannwhitneyu(pos, neg, alternative='two-sided').statistic / (len(pos) * len(neg))
 
 
+def calibration(conf, correct, suffix=''):
+    if len(conf) == 0:
+        return {f'{k}{suffix}': np.nan for k in ['success', 'overconfidence', 'ece', 'brier', 'auroc']}
+    return {f'success{suffix}': correct.mean(), f'overconfidence{suffix}': conf.mean() - correct.mean(),
+            f'ece{suffix}': ece(conf, correct), f'brier{suffix}': np.mean((conf - correct) ** 2),
+            f'auroc{suffix}': auroc(conf, correct)}
+
+
 def summarize(df):
     rows = []
     for (model, effort), g in df.groupby(['model_key', 'effort']):
@@ -53,20 +61,21 @@ def summarize(df):
         conf = (v['confidence'] / 10).clip(0, 1).to_numpy(float)
         correct = v['success'].to_numpy(bool)
         lo, hi = wilson(correct.sum(), len(v))
-        rows.append({
+        row = {
             'model_key': model, 'effort': effort, 'n': len(g), 'valid_rate': g['valid'].mean(),
-            'success': correct.mean() if len(v) else np.nan, 'success_ci_low': lo, 'success_ci_high': hi,
+            'success_ci_low': lo, 'success_ci_high': hi,
             'success_invalid_as_fail': g['success'].fillna(False).astype(bool).mean(),
             'mean_reward': v['reward'].mean(), 'chose_target': v['chose_target'].astype(bool).mean(),
             'chose_perfect_product': v['chosen_product_perfect'].astype(bool).mean(),
             'mean_confidence': v['confidence'].mean(),
-            'overconfidence': conf.mean() - correct.mean() if len(v) else np.nan,
-            'ece': ece(conf, correct) if len(v) else np.nan,
-            'brier': np.mean((conf - correct) ** 2) if len(v) else np.nan,
-            'auroc': auroc(conf, correct),
             'mean_reasoning_tokens': g['reasoning_tokens'].mean(),
             'mean_completion_tokens': g['completion_tokens'].mean(),
-        })
+        }
+        row.update(calibration(conf, correct))
+        if 'success_lenient' in v:
+            row.update(calibration(conf, v['success_lenient'].to_numpy(bool), '_lenient'))
+            row['mean_reward_lenient'] = v['reward_lenient'].mean()
+        rows.append(row)
     out = pd.DataFrame(rows)
     out['effort'] = pd.Categorical(out['effort'], EFFORTS, ordered=True)
     return out.sort_values(['model_key', 'effort'])
@@ -76,12 +85,13 @@ def effort_effects(df, rng):
     """Paired (same tasks) high-minus-low differences with bootstrap 95% CIs."""
     rows = []
     for model, g in df[df['valid']].groupby('model_key'):
+        metrics = [m for m in ['success', 'success_lenient', 'confidence'] if m in g]
         wide = g.pivot_table(index=['task_id', 'sample'], columns='effort',
-                             values=['success', 'confidence'], aggfunc='first')
+                             values=metrics, aggfunc='first')
         for a, b in [('low', 'high'), ('low', 'medium'), ('medium', 'high')]:
             if a not in wide['success'] or b not in wide['success']:
                 continue
-            for metric in ['success', 'confidence']:
+            for metric in metrics:
                 d = (wide[metric][b].astype(float) - wide[metric][a].astype(float)).dropna().to_numpy()
                 if len(d) == 0:
                     continue
@@ -119,11 +129,15 @@ def plot_effort(summary, path):
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.2))
     for model, g in summary.groupby('model_key'):
         x = [EFFORTS.index(e) for e in g['effort']]
-        axes[0].errorbar(x, g['success'], yerr=[g['success'] - g['success_ci_low'], g['success_ci_high'] - g['success']],
-                         marker='o', capsize=3, label=model)
+        bars = axes[0].errorbar(x, g['success'], yerr=[g['success'] - g['success_ci_low'], g['success_ci_high'] - g['success']],
+                                marker='o', capsize=3, label=model)
+        if 'success_lenient' in g:
+            axes[0].plot(x, g['success_lenient'], linestyle='--', marker='x', color=bars[0].get_color())
         axes[1].plot(x, g['mean_confidence'], marker='o', label=model)
         axes[2].plot(x, g['mean_reasoning_tokens'], marker='o', label=model)
-    for ax, title in zip(axes, ['Success rate (reward = 1.0)', 'Mean confidence (0-10)', 'Mean reasoning tokens']):
+    titles = ['Success rate (solid: WebShop reward = 1.0; dashed: lenient)', 'Mean confidence (0-10)',
+              'Mean reasoning tokens']
+    for ax, title in zip(axes, titles):
         ax.set_xticks(range(3))
         ax.set_xticklabels(EFFORTS)
         ax.set_xlabel('reasoning effort')
@@ -207,8 +221,9 @@ def main():
     plot_reliability(df, join(out_dir, 'reliability.png'))
     plot_agreement(agree, join(out_dir, 'agreement_heatmap.png'))
 
-    cols = ['model_key', 'effort', 'n', 'valid_rate', 'success', 'mean_reward', 'mean_confidence',
-            'overconfidence', 'ece', 'auroc', 'mean_reasoning_tokens']
+    cols = [c for c in ['model_key', 'effort', 'n', 'valid_rate', 'success', 'success_lenient',
+                        'mean_confidence', 'overconfidence', 'overconfidence_lenient', 'ece',
+                        'auroc', 'auroc_lenient', 'mean_reasoning_tokens'] if c in summary]
     print(summary[cols].round(3).to_string(index=False))
     if len(effects):
         print('\nEffort effects (paired, bootstrap 95% CI):')
