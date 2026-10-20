@@ -5,20 +5,26 @@ shuffle), so goal indices 0-499 are WebShop's standard test split and 500-1499
 its dev split. Unlike upstream, all randomness (sampled prices for products with
 a price range, and each goal's price ceiling) is seeded, so tasks are frozen.
 
-Each task presents the goal's target product plus the top non-target BM25 hits
-for the instruction text, in a seeded random order. Every candidate is also
-scored with its best-matching options ("oracle"), so we know how many
-candidates can earn a perfect reward.
+Every candidate is scored with its best-matching options ("oracle"). Two
+distractor strategies:
+  near_miss (default): from a pool of the top BM25 hits plus products scraped
+      under the same Amazon query, drop every product that could also earn a
+      perfect reward and keep the highest-scoring same-type non-matches. Each
+      task has exactly one correct product; goals whose target cannot reach a
+      perfect reward are skipped. Output: tasks_<split>_nearmiss.jsonl
+  bm25: the top non-target BM25 hits for the instruction. Output: tasks_<split>.jsonl
 
 Usage (repo root, Python 3.8 `webshop` env):
     python experiments/build_tasks.py --split test
     python experiments/build_tasks.py --split dev --limit 100
 """
 import argparse
+import functools
 import json
 import os
 import random
 import sys
+from collections import defaultdict
 from os.path import abspath, dirname, join
 
 REPO_DIR = dirname(dirname(abspath(__file__)))
@@ -27,12 +33,15 @@ sys.path.insert(0, REPO_DIR)
 from thefuzz import fuzz  # noqa: E402
 from tqdm import tqdm  # noqa: E402
 
-from web_agent_site.engine.engine import (  # noqa: E402
-    get_top_n_product_from_keywords, init_search_engine, load_products,
-)
+import web_agent_site.engine.goal as goal_module  # noqa: E402
+from web_agent_site.engine.engine import init_search_engine, load_products  # noqa: E402
 from web_agent_site.engine.goal import get_human_goals, get_reward  # noqa: E402
 from web_agent_site.engine.normalize import normalize_color  # noqa: E402
 from web_agent_site.utils import DEFAULT_FILE_PATH  # noqa: E402
+
+# get_type_reward re-parses the same product names many times; caching the
+# spaCy parse leaves rewards unchanged and makes pool scoring fast.
+goal_module.nlp = functools.lru_cache(maxsize=None)(goal_module.nlp)
 
 SPLITS = {'test': (0, 500), 'dev': (500, 1500)}
 GOAL_FIELDS = ['asin', 'instruction_text', 'attributes', 'goal_options', 'price_upper',
@@ -51,11 +60,34 @@ def best_options(product, goal_options):
     return chosen
 
 
+def oracle(product, goal, price):
+    options = best_options(product, goal['goal_options'])
+    reward, info = get_reward(product, goal, price=price, options=options, verbose=True)
+    failures = [name for name, failed in [
+        ('type', info['r_type'] < 1),
+        ('attributes', info['r_att'] < 1),
+        ('options', info.get('r_option') is not None and info['r_option'] < 1),
+        ('price', info.get('r_price') is False),
+    ] if failed]
+    return options, reward, info, failures
+
+
+def bm25_asins(search_engine, query, k, product_item_dict):
+    asins = []
+    for hit in search_engine.search(query, k=k):
+        asin = json.loads(search_engine.doc(hit.docid).raw())['id']
+        if asin in product_item_dict and asin not in asins:
+            asins.append(asin)
+    return asins
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--split', choices=SPLITS, required=True)
     parser.add_argument('--limit', type=int, default=None)
+    parser.add_argument('--distractors', choices=['near_miss', 'bm25'], default='near_miss')
     parser.add_argument('--num-candidates', type=int, default=10)
+    parser.add_argument('--pool-size', type=int, default=100)
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--out-dir', default=join(REPO_DIR, 'data', 'tasks'))
     args = parser.parse_args()
@@ -67,67 +99,88 @@ def main():
     random.seed(233)
     random.shuffle(goals)
     search_engine = init_search_engine(num_products=None)
+    asins_by_query = defaultdict(list)
+    for p in all_products:
+        asins_by_query[p['query']].append(p['asin'])
 
     start, end = SPLITS[args.split]
     if args.limit is not None:
         end = min(end, start + args.limit)
+    label = args.split if args.distractors == 'bm25' else f'{args.split}_nearmiss'
+    n_distractors = args.num_candidates - 1
 
     os.makedirs(args.out_dir, exist_ok=True)
-    out_path = join(args.out_dir, f'tasks_{args.split}.jsonl')
+    out_path = join(args.out_dir, f'tasks_{label}.jsonl')
+    n_written, skipped = 0, []
     with open(out_path, 'w') as f:
-        for goal_idx in tqdm(range(start, end), desc=f'{args.split} tasks'):
+        for goal_idx in tqdm(range(start, end), desc=f'{label} tasks'):
             goal = goals[goal_idx]
             assert isinstance(goal['goal_options'], list)
             target_asin = goal['asin']
             query = goal['instruction_text'].lower()
-            hits = get_top_n_product_from_keywords(
-                query.split(), search_engine, all_products, product_item_dict)
-            hit_asins = [p['asin'] for p in hits]
-            target_rank = hit_asins.index(target_asin) + 1 if target_asin in hit_asins else None
+            rng = random.Random(f'{args.seed}-{goal_idx}')
+            scored = {}
 
-            distractors = []
-            for asin in hit_asins:
-                if asin != target_asin and asin not in distractors:
-                    distractors.append(asin)
-                if len(distractors) == args.num_candidates - 1:
-                    break
+            def score(asin):
+                if asin not in scored:
+                    scored[asin] = oracle(product_item_dict[asin], goal, round(product_prices[asin], 2))
+                return scored[asin]
+
+            if args.distractors == 'near_miss' and score(target_asin)[1] < 1.0:
+                skipped.append(goal_idx)
+                continue
+
+            hit_asins = bm25_asins(search_engine, query, 50, product_item_dict)
+            bm25_rank = {a: i + 1 for i, a in enumerate(hit_asins)}
+            if args.distractors == 'bm25':
+                distractors = [a for a in hit_asins if a != target_asin][:n_distractors]
+            else:
+                pool = bm25_asins(search_engine, query, args.pool_size, product_item_dict)
+                same_query = [a for a in asins_by_query[goal['query']] if a not in pool]
+                pool += rng.sample(same_query, min(len(same_query), args.pool_size))
+                pool = [a for a in pool if a != target_asin and score(a)[1] < 1.0]
+                pool.sort(key=lambda a: (score(a)[2]['r_type'] < 1, -score(a)[1],
+                                         bm25_rank.get(a, len(bm25_rank) + 1)))
+                distractors = pool[:n_distractors]
+
             asins = [target_asin] + distractors
-            random.Random(f'{args.seed}-{goal_idx}').shuffle(asins)
-
+            rng.shuffle(asins)
             candidates = []
             for position, asin in enumerate(asins, start=1):
-                product = product_item_dict[asin]
-                price = round(product_prices[asin], 2)
-                options = best_options(product, goal['goal_options'])
-                reward, info = get_reward(product, goal, price=price, options=options, verbose=True)
+                options, reward, info, failures = score(asin)
                 candidates.append({
                     'position': position,
                     'asin': asin,
-                    'price': price,
-                    'product': {k: product[k] for k in PRODUCT_FIELDS},
+                    'price': round(product_prices[asin], 2),
+                    'product': {k: product_item_dict[asin][k] for k in PRODUCT_FIELDS},
                     'oracle_options': options,
                     'oracle_reward': reward,
                     'oracle_info': info,
+                    'oracle_failures': failures,
                 })
 
             oracle_rewards = [c['oracle_reward'] for c in candidates]
+            target_position = asins.index(target_asin) + 1
             task = {
-                'task_id': f'{args.split}-{goal_idx:04d}',
-                'split': args.split,
+                'task_id': f'{label}-{goal_idx:04d}',
+                'split': label,
                 'goal_idx': goal_idx,
+                'distractor_strategy': args.distractors,
                 'goal': {k: goal[k] for k in GOAL_FIELDS},
                 'search_query': query,
                 'target_asin': target_asin,
-                'target_position': asins.index(target_asin) + 1,
-                'target_bm25_rank': target_rank,
+                'target_position': target_position,
+                'target_bm25_rank': bm25_rank.get(target_asin),
                 'num_candidates': len(candidates),
                 'max_oracle_reward': max(oracle_rewards),
                 'num_perfect_candidates': sum(r == 1.0 for r in oracle_rewards),
-                'target_oracle_reward': candidates[asins.index(target_asin)]['oracle_reward'],
+                'target_oracle_reward': candidates[target_position - 1]['oracle_reward'],
                 'candidates': candidates,
             }
             f.write(json.dumps(task) + '\n')
-    print(f'wrote {end - start} tasks to {out_path}')
+            n_written += 1
+    print(f'wrote {n_written} tasks to {out_path}; skipped {len(skipped)} goals whose '
+          f'target cannot reach reward 1.0: {skipped}')
 
 
 if __name__ == '__main__':

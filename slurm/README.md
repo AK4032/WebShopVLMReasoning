@@ -26,8 +26,8 @@ Re-transferring a new bundle later only needs the `unzip -o` step; the venv and 
 
 | Script | What it runs | Requests |
 |---|---|---|
-| `slurm/pilot.sbatch` | 20 dev tasks x 3 models x 3 efforts | 180 |
-| `slurm/prelim.sbatch` | 150 test tasks x 3 models x 3 efforts | 1,350 |
+| `slurm/pilot.sbatch` | 20 near-miss dev tasks x 3 models x 3 efforts | 180 |
+| `slurm/prelim.sbatch` | 150 near-miss test tasks x 3 models x 3 efforts | 1,350 |
 
 ```bash
 sbatch slurm/pilot.sbatch
@@ -43,8 +43,8 @@ that already succeeded, so it is safe after timeouts or failures.
 
 ```powershell
 scp -r <BoothID>@mercury.chicagobooth.edu:~/webshop_vlm/results/raw results/
-python experiments/score.py --split dev      # or --split test
-python experiments/analyze.py --split dev
+python experiments/score.py --split dev_nearmiss      # or test_nearmiss
+python experiments/analyze.py --split dev_nearmiss
 ```
 
 Outputs: `results/scored/<split>.csv` (one row per response) and
