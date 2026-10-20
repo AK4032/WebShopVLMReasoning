@@ -252,6 +252,8 @@ async def run_one(client, semaphore, task, sample, model, effort, max_tokens, ar
         parsed, parse_error = parse_choice(message.get('content'), task)
         record['parsed'] = parsed
         record['parse_error'] = parse_error
+        if choice.get('finish_reason') == 'error':
+            record['error'] = f'provider error: {json.dumps(choice.get("error") or body.get("error"))[:500]}'
     return record
 
 
