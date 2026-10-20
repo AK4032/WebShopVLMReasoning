@@ -7,7 +7,9 @@ Mercury can run them.
 
 Usage (repo root):
     python experiments/make_bundle.py
+    python experiments/make_bundle.py --task-limit 150   # first 150 complete tasks per file
 """
+import argparse
 import glob
 import os
 import zipfile
@@ -20,15 +22,28 @@ BINARY_PATTERNS = ['data/images/*.jpg']
 EMPTY_DIRS = ['slurm/logs/', 'results/']
 
 
+def read_text(path, task_limit):
+    with open(path, 'rb') as f:
+        data = f.read().replace(b'\r\n', b'\n')
+    if path.endswith('.jsonl'):
+        lines = data.split(b'\n')[:-1]  # drop any partially written last line
+        if task_limit is not None:
+            lines = lines[:task_limit]
+        data = b''.join(line + b'\n' for line in lines)
+    return data
+
+
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--task-limit', type=int, default=None)
+    args = parser.parse_args()
     os.makedirs(join(REPO_DIR, 'dist'), exist_ok=True)
     out_path = join(REPO_DIR, 'dist', 'mercury_bundle.zip')
     n_files = 0
     with zipfile.ZipFile(out_path, 'w', zipfile.ZIP_DEFLATED) as zf:
         for pattern in TEXT_PATTERNS:
             for path in sorted(glob.glob(join(REPO_DIR, pattern))):
-                with open(path, 'rb') as f:
-                    zf.writestr(relpath(path, REPO_DIR).replace(os.sep, '/'), f.read().replace(b'\r\n', b'\n'))
+                zf.writestr(relpath(path, REPO_DIR).replace(os.sep, '/'), read_text(path, args.task_limit))
                 n_files += 1
         for pattern in BINARY_PATTERNS:
             for path in sorted(glob.glob(join(REPO_DIR, pattern))):
