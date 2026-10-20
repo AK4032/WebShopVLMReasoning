@@ -1,0 +1,27 @@
+# OpenRouter model IDs checked against https://openrouter.ai/api/v1/models on 2026-10-19.
+# `key` names the output folder; `openrouter` is the API model ID.
+# `images: false` sends product text only (model has no image input).
+
+efforts: [low, medium, high]
+
+# Shared output budget (reasoning + answer). OpenRouter derives Anthropic thinking
+# budgets from it (low/medium/high = 20/50/80%), so keep it identical across runs.
+max_tokens: 16000
+
+groups:
+  prelim:
+    - {key: gpt-6.1-sol, openrouter: openai/gpt-6.1-sol}
+    - {key: claude-opus-5.5, openrouter: anthropic/claude-opus-5.5}
+    - {key: gemini-3.1-pro, openrouter: google/gemini-3.1-pro-preview}
+
+  full:
+    - {key: gpt-6-astra, openrouter: openai/gpt-6-astra}
+    - {key: gpt-6.1-sol, openrouter: openai/gpt-6.1-sol}
+    - {key: gpt-6-luna, openrouter: openai/gpt-6-luna}
+    - {key: claude-fable-5.1, openrouter: anthropic/claude-fable-5.1}
+    - {key: claude-opus-5.5, openrouter: anthropic/claude-opus-5.5}
+    - {key: gemini-3.1-pro, openrouter: google/gemini-3.1-pro-preview}
+    - {key: deepseek-v4-pro, openrouter: deepseek/deepseek-v4-pro-0813, images: false}
+    - {key: qwen3.8-max, openrouter: qwen/qwen3.8-max-0902}
+    - {key: kimi-k3, openrouter: moonshotai/kimi-k3}
+    - {key: glm-5v-turbo, openrouter: z-ai/glm-5v-turbo}
