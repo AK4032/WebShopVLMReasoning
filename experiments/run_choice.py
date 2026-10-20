@@ -319,6 +319,8 @@ async def main_async(args):
                     n_ok += 1
                 else:
                     n_err += 1
+                    if n_err <= 5:
+                        print(f'  {record["task_id"]}: {record["error"] or record["parse_error"]}', flush=True)
                 if i % 10 == 0 or i == len(jobs):
                     print(f'  {i}/{len(jobs)} done ({n_ok} ok, {n_err} with errors)', flush=True)
 
