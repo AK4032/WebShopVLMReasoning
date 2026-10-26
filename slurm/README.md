@@ -28,6 +28,11 @@ Re-transferring a new bundle later only needs the `unzip -o` step; the venv and 
 |---|---|---|
 | `slurm/pilot.sbatch` | 20 robust near-miss dev tasks x 3 models x 3 efforts | 180 |
 | `slurm/prelim.sbatch` | 150 robust near-miss test tasks x 3 models x 3 efforts | 1,350 |
+| `slurm/smoke.sbatch` | 3 final dev tasks x 29 model/effort pairs (full study) | 87 |
+| `slurm/full.sbatch` | 496 final test tasks x 29 model/effort pairs (full study) | ~14,400 |
+
+For the full study, array index -> (model, effort) is listed by
+`python experiments/run_choice.py --group full --list-combos` (indices 0-28).
 
 ```bash
 sbatch slurm/pilot.sbatch
@@ -43,8 +48,8 @@ that already succeeded, so it is safe after timeouts or failures.
 
 ```powershell
 scp -r <BoothID>@mercury.chicagobooth.edu:~/webshop_vlm/results/raw results/
-python experiments/score.py --split dev_robust      # or test_robust
-python experiments/analyze.py --split dev_robust
+python experiments/score.py --split test_final      # or dev_final, test_robust, ...
+python experiments/analyze.py --split test_final
 ```
 
 Outputs: `results/scored/<split>.csv` (one row per response) and
