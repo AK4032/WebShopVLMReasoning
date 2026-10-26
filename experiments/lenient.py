@@ -102,17 +102,24 @@ def _phrase_in(phrase, text_lower, positions, text_compact):
     return bool(phrase_words) and _near(phrase_words, positions)
 
 
-def attribute_satisfied(product, attribute, extra_text=''):
-    """WebShop's check, or the attribute (or a synonym) appears in the product text or `extra_text`."""
-    if any(fuzz.token_set_ratio(a, attribute) > 85 for a in product['Attributes']):
-        return True
+def _text_context(product, extra_text):
     text_lower = (product_text(product) + ' ' + extra_text).lower()
-    if attribute in text_lower:
-        return True
     positions = {}
     for i, tok in enumerate(tokens(text_lower)):
         positions.setdefault(tok, []).append(i)
-    text_compact = _compact(text_lower)
+    return text_lower, positions, _compact(text_lower)
+
+
+def attribute_satisfied(product, attribute, extra_text='', context=None):
+    """WebShop's check, or the attribute (or a synonym) appears in the product text or `extra_text`.
+
+    `context` is a precomputed `_text_context(product, extra_text)`.
+    """
+    if any(fuzz.token_set_ratio(a, attribute) > 85 for a in product['Attributes']):
+        return True
+    text_lower, positions, text_compact = context or _text_context(product, extra_text)
+    if attribute in text_lower:
+        return True
     return any(_phrase_in(v, text_lower, positions, text_compact) for v in variants(attribute))
 
 
@@ -182,9 +189,9 @@ def _option_satisfied(goal_option, instruction, values):
 def check(product, goal, price):
     """Which goal requirements a product cannot satisfy, even under lenient matching."""
     values = [v for vs in product['options'].values() for v in vs]
-    option_text = ' '.join(values)
+    context = _text_context(product, ' '.join(values))
     failed_attributes = [a for a in goal['attributes']
-                         if not attribute_satisfied(product, a, option_text)]
+                         if not attribute_satisfied(product, a, context=context)]
     unavailable_options = [o for o in goal['goal_options']
                            if not _option_satisfied(o, goal['instruction_text'], values)]
     over_budget = goal['price_upper'] > 0 and price > goal['price_upper']
@@ -201,8 +208,8 @@ def reward(product, goal, price, options, r_type):
     options only on the chosen values. `r_type` is WebShop's product-type factor.
     """
     chosen = list(options.values())
-    chosen_text = ' '.join(chosen)
-    n_attr = sum(attribute_satisfied(product, a, chosen_text) for a in goal['attributes'])
+    context = _text_context(product, ' '.join(chosen))
+    n_attr = sum(attribute_satisfied(product, a, context=context) for a in goal['attributes'])
     n_opt = sum(_option_satisfied(g, goal['instruction_text'], chosen) for g in goal['goal_options'])
     r_price = price <= goal['price_upper'] if goal['price_upper'] > 0 else True
     total = (n_attr + n_opt + r_price) / (len(goal['attributes']) + len(goal['goal_options']) + 1)

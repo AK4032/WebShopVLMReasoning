@@ -1,6 +1,9 @@
-# OpenRouter model IDs checked against https://openrouter.ai/api/v1/models on 2026-10-19.
+# OpenRouter model IDs and reasoning support checked against
+# https://openrouter.ai/api/v1/models on 2026-10-25.
 # `key` names the output folder; `openrouter` is the API model ID.
 # `images: false` sends product text only (model has no image input).
+# `efforts` overrides the default list for models that do not support every level;
+# "default" means reasoning switched on with no effort control.
 
 efforts: [low, medium, high]
 
@@ -20,8 +23,9 @@ groups:
     - {key: gpt-6-luna, openrouter: openai/gpt-6-luna}
     - {key: claude-fable-5.1, openrouter: anthropic/claude-fable-5.1}
     - {key: claude-opus-5.5, openrouter: anthropic/claude-opus-5.5}
+    - {key: gemini-4-argon, openrouter: google/gemini-4-argon}
     - {key: gemini-3.1-pro, openrouter: google/gemini-3.1-pro-preview}
-    - {key: deepseek-v4-pro, openrouter: deepseek/deepseek-v4-pro-0813, images: false}
+    - {key: deepseek-v4-pro, openrouter: deepseek/deepseek-v4-pro-0813, images: false, efforts: [low, high]}
     - {key: qwen3.8-max, openrouter: qwen/qwen3.8-max-0902}
-    - {key: kimi-k3, openrouter: moonshotai/kimi-k3}
-    - {key: glm-5v-turbo, openrouter: z-ai/glm-5v-turbo}
+    - {key: kimi-k3, openrouter: moonshotai/kimi-k3, efforts: [low, high]}
+    - {key: glm-5v-turbo, openrouter: z-ai/glm-5v-turbo, efforts: [default]}

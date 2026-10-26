@@ -15,6 +15,7 @@ Examples (repo root):
         --group prelim --array-index $SLURM_ARRAY_TASK_ID --limit 150
     python experiments/run_choice.py --tasks data/tasks/tasks_dev.jsonl \
         --model-key gpt-6.1-sol --effort low --limit 1 --dry-run
+    python experiments/run_choice.py --group full --list-combos
 """
 import argparse
 import asyncio
@@ -60,17 +61,25 @@ def load_config(path):
         return yaml.safe_load(f)
 
 
+def combos_for(config, group):
+    """(model entry, effort) pairs for a group, using each model's supported effort levels."""
+    return [(m, e) for m in config['groups'][group] for e in m.get('efforts', config['efforts'])]
+
+
 def resolve_run(config, args):
     """Return (model entry, effort) from --model-key/--effort or --group/--array-index."""
     if args.group is not None:
-        combos = [(m, e) for m in config['groups'][args.group] for e in config['efforts']]
+        combos = combos_for(config, args.group)
         if args.array_index is None or not 0 <= args.array_index < len(combos):
             raise SystemExit(f'--array-index must be in [0, {len(combos) - 1}] for group {args.group}')
         return combos[args.array_index]
     models = {m['key']: m for group in config['groups'].values() for m in group}
     if args.model_key not in models or args.effort is None:
         raise SystemExit('give --model-key and --effort, or --group and --array-index')
-    return models[args.model_key], args.effort
+    model = models[args.model_key]
+    if args.effort not in model.get('efforts', config['efforts']):
+        raise SystemExit(f'{args.model_key} supports efforts {model.get("efforts", config["efforts"])}')
+    return model, args.effort
 
 
 def format_product(position, candidate):
@@ -229,7 +238,7 @@ async def run_one(client, semaphore, task, sample, model, effort, max_tokens, ar
             'model': model['openrouter'],
             'messages': messages,
             'max_tokens': max_tokens,
-            'reasoning': {'effort': effort},
+            'reasoning': {'enabled': True} if effort == 'default' else {'effort': effort},
             'provider': {'require_parameters': True},
         }
         record['started_at'] = datetime.now(timezone.utc).isoformat()
@@ -273,8 +282,14 @@ def load_done(out_path):
 
 async def main_async(args):
     config = load_config(args.config)
+    if args.list_combos:
+        for i, (m, e) in enumerate(combos_for(config, args.group)):
+            print(f'{i}\t{m["key"]}\t{e}')
+        return
     model, effort = resolve_run(config, args)
     max_tokens = args.max_tokens or config['max_tokens']
+    if not args.tasks:
+        raise SystemExit('--tasks is required')
 
     with open(args.tasks) as f:
         tasks = [json.loads(line) for line in f]
@@ -329,7 +344,8 @@ async def main_async(args):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--tasks', required=True)
+    parser.add_argument('--tasks')
+    parser.add_argument('--list-combos', action='store_true', help='print array index -> (model, effort) for --group')
     parser.add_argument('--config', default=join(REPO_DIR, 'experiments', 'configs', 'models.yaml'))
     parser.add_argument('--model-key')
     parser.add_argument('--effort')

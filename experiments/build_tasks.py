@@ -5,9 +5,14 @@ shuffle), so goal indices 0-499 are WebShop's standard test split and 500-1499
 its dev split. Unlike upstream, all randomness (sampled prices for products with
 a price range, and each goal's price ceiling) is seeded, so tasks are frozen.
 
-Every candidate is scored with its best-matching options ("oracle"). Three
+Every candidate is scored with its best-matching options ("oracle"). Four
 distractor strategies:
-  robust (default): like near_miss, but a distractor must also fail at least
+  final (default): like robust, but distractors must also be the same kind of
+      product as the target (scraped under the same Amazon query, or sharing its
+      most specific category), the pool adds same-category products, and goals
+      with fewer than the required number of such distractors are skipped.
+      Output: tasks_<split>_final.jsonl
+  robust: like near_miss, but a distractor must also fail at least
       one requirement under the lenient checks in lenient.py, so products that
       satisfy the instruction but trip WebShop's string matching are excluded.
       Output: tasks_<split>_robust.jsonl
@@ -16,8 +21,8 @@ distractor strategies:
       reward and keep the highest-scoring same-type non-matches.
       Output: tasks_<split>_nearmiss.jsonl
   bm25: the top non-target BM25 hits for the instruction. Output: tasks_<split>.jsonl
-For robust and near_miss, each task has exactly one correct product, and goals
-whose target cannot reach a perfect reward are skipped.
+For final, robust and near_miss, each task has exactly one correct product, and
+goals whose target cannot reach a perfect reward are skipped.
 
 Usage (repo root, Python 3.8 `webshop` env):
     python experiments/build_tasks.py --split test
@@ -78,6 +83,10 @@ def oracle(product, goal, price):
     return options, reward, info, failures, lenient.check(product, goal, price)
 
 
+def leaf_category(product):
+    return product['product_category'].split('›')[-1].strip().lower()
+
+
 def bm25_asins(search_engine, query, k, product_item_dict):
     asins = []
     for hit in search_engine.search(query, k=k):
@@ -91,7 +100,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--split', choices=SPLITS, required=True)
     parser.add_argument('--limit', type=int, default=None)
-    parser.add_argument('--distractors', choices=['robust', 'near_miss', 'bm25'], default='robust')
+    parser.add_argument('--distractors', choices=['final', 'robust', 'near_miss', 'bm25'], default='final')
     parser.add_argument('--num-candidates', type=int, default=10)
     parser.add_argument('--pool-size', type=int, default=100)
     parser.add_argument('--seed', type=int, default=0)
@@ -105,19 +114,21 @@ def main():
     random.seed(233)
     random.shuffle(goals)
     search_engine = init_search_engine(num_products=None)
-    asins_by_query = defaultdict(list)
+    asins_by_query, asins_by_leaf = defaultdict(list), defaultdict(list)
     for p in all_products:
         asins_by_query[p['query']].append(p['asin'])
+        asins_by_leaf[leaf_category(p)].append(p['asin'])
 
     start, end = SPLITS[args.split]
     if args.limit is not None:
         end = min(end, start + args.limit)
-    label = args.split + {'bm25': '', 'near_miss': '_nearmiss', 'robust': '_robust'}[args.distractors]
+    label = args.split + {'bm25': '', 'near_miss': '_nearmiss', 'robust': '_robust',
+                          'final': '_final'}[args.distractors]
     n_distractors = args.num_candidates - 1
 
     os.makedirs(args.out_dir, exist_ok=True)
     out_path = join(args.out_dir, f'tasks_{label}.jsonl')
-    n_written, skipped = 0, []
+    n_written, skipped, short_pool = 0, [], []
     with open(out_path, 'w') as f:
         for goal_idx in tqdm(range(start, end), desc=f'{label} tasks'):
             goal = goals[goal_idx]
@@ -144,11 +155,21 @@ def main():
                 pool = bm25_asins(search_engine, query, args.pool_size, product_item_dict)
                 same_query = [a for a in asins_by_query[goal['query']] if a not in pool]
                 pool += rng.sample(same_query, min(len(same_query), args.pool_size))
+                target_leaf = leaf_category(product_item_dict[target_asin])
+                if args.distractors == 'final':
+                    same_leaf = [a for a in asins_by_leaf[target_leaf] if a not in pool]
+                    pool += rng.sample(same_leaf, min(len(same_leaf), args.pool_size))
                 pool = [a for a in pool if a != target_asin and score(a)[1] < 1.0
-                        and (args.distractors == 'near_miss' or not score(a)[4]['could_satisfy'])]
+                        and (args.distractors == 'near_miss' or not score(a)[4]['could_satisfy'])
+                        and (args.distractors != 'final'
+                             or product_item_dict[a]['query'] == goal['query']
+                             or leaf_category(product_item_dict[a]) == target_leaf)]
                 pool.sort(key=lambda a: (score(a)[2]['r_type'] < 1, -score(a)[1],
                                          bm25_rank.get(a, len(bm25_rank) + 1)))
                 distractors = pool[:n_distractors]
+                if args.distractors == 'final' and len(distractors) < n_distractors:
+                    short_pool.append(goal_idx)
+                    continue
 
             asins = [target_asin] + distractors
             rng.shuffle(asins)
@@ -188,7 +209,8 @@ def main():
             f.write(json.dumps(task) + '\n')
             n_written += 1
     print(f'wrote {n_written} tasks to {out_path}; skipped {len(skipped)} goals whose '
-          f'target cannot reach reward 1.0: {skipped}')
+          f'target cannot reach reward 1.0: {skipped}; skipped {len(short_pool)} goals with fewer '
+          f'than {n_distractors} same-kind distractors: {short_pool}')
 
 
 if __name__ == '__main__':
