@@ -20,8 +20,15 @@ import pandas as pd  # noqa: E402
 from scipy.stats import mannwhitneyu  # noqa: E402
 
 REPO_DIR = dirname(dirname(abspath(__file__)))
-EFFORTS = ['low', 'medium', 'high']
+# "default" = reasoning on without effort control (models that expose no effort levels).
+EFFORTS = ['low', 'medium', 'high', 'default']
+EFFORT_X = {'low': 0, 'medium': 1, 'high': 2, 'default': 1}
 N_BOOT = 2000
+
+
+def model_colors(models):
+    cmap = plt.get_cmap('tab20')
+    return {m: cmap(i % 20) for i, m in enumerate(sorted(models))}
 
 
 def wilson(k, n, z=1.96):
@@ -126,25 +133,31 @@ def concentration(df):
 
 
 def plot_effort(summary, path):
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4.2))
+    fig, axes = plt.subplots(1, 3, figsize=(16, 4.6))
+    colors = model_colors(summary['model_key'].unique())
     for model, g in summary.groupby('model_key'):
-        x = [EFFORTS.index(e) for e in g['effort']]
-        bars = axes[0].errorbar(x, g['success'], yerr=[g['success'] - g['success_ci_low'], g['success_ci_high'] - g['success']],
-                                marker='o', capsize=3, label=model)
+        g = g.dropna(subset=['success'])
+        default = list(g['effort']) == ['default']
+        style = dict(color=colors[model], marker='D' if default else 'o', linestyle='none' if default else '-',
+                     label=f'{model} (default effort)' if default else model)
+        x = [EFFORT_X[e] for e in g['effort']]
+        axes[0].errorbar(x, g['success'], yerr=[g['success'] - g['success_ci_low'], g['success_ci_high'] - g['success']],
+                         capsize=3, **style)
         if 'success_lenient' in g:
-            axes[0].plot(x, g['success_lenient'], linestyle='--', marker='x', color=bars[0].get_color())
-        axes[1].plot(x, g['mean_confidence'], marker='o', label=model)
-        axes[2].plot(x, g['mean_reasoning_tokens'], marker='o', label=model)
+            axes[0].plot(x, g['success_lenient'], linestyle='none' if default else '--', marker='x',
+                         color=colors[model])
+        axes[1].plot(x, g['mean_confidence'], **style)
+        axes[2].plot(x, g['mean_reasoning_tokens'], **style)
     titles = ['Success rate (solid: WebShop reward = 1.0; dashed: lenient)', 'Mean confidence (0-10)',
               'Mean reasoning tokens']
     for ax, title in zip(axes, titles):
         ax.set_xticks(range(3))
-        ax.set_xticklabels(EFFORTS)
+        ax.set_xticklabels(EFFORTS[:3])
         ax.set_xlabel('reasoning effort')
         ax.set_title(title)
     axes[0].set_ylim(0, 1)
     axes[1].set_ylim(0, 10)
-    axes[0].legend(fontsize=8)
+    axes[0].legend(fontsize=7, ncol=2)
     fig.tight_layout()
     fig.savefig(path, dpi=150)
     plt.close(fig)
@@ -152,9 +165,13 @@ def plot_effort(summary, path):
 
 def plot_reliability(df, path, n_bins=5):
     models = sorted(df['model_key'].unique())
-    fig, axes = plt.subplots(1, len(models), figsize=(4.5 * len(models), 4.2), squeeze=False)
+    ncols = min(4, len(models))
+    nrows = int(np.ceil(len(models) / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4.5 * ncols, 4.2 * nrows), squeeze=False)
+    for ax in axes.flat[len(models):]:
+        ax.axis('off')
     edges = np.linspace(0, 1, n_bins + 1)
-    for ax, model in zip(axes[0], models):
+    for ax, model in zip(axes.flat, models):
         ax.plot([0, 1], [0, 1], color='grey', linestyle='--', linewidth=1)
         for effort in EFFORTS:
             v = df[(df['model_key'] == model) & (df['effort'] == effort) & df['valid']]
